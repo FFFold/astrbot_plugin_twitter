@@ -44,6 +44,43 @@ except ModuleNotFoundError as exc:
 TWITTER_LINK_PATTERN = re.compile(
     r"(https?://(?:twitter\.com|x\.com)/([a-zA-Z0-9_]+)/status/(\d+))"
 )
+TWITTER_PARSE_COMMAND_PATTERN = re.compile(
+    r"^\s*/(?:推特解析|twitter_parse)(?:\s|$)",
+    re.IGNORECASE,
+)
+
+LINK_RECOGNITION_MODE_AUTO = "auto"
+LINK_RECOGNITION_MODE_OFF = "off"
+LINK_RECOGNITION_MODE_COMMAND = "command"
+LINK_RECOGNITION_MODES = {
+    LINK_RECOGNITION_MODE_AUTO,
+    LINK_RECOGNITION_MODE_OFF,
+    LINK_RECOGNITION_MODE_COMMAND,
+}
+
+
+def _normalize_link_recognition_mode(value: Any) -> str:
+    """规范链接解析模式，并兼容旧版布尔配置。"""
+    if isinstance(value, bool):
+        return (
+            LINK_RECOGNITION_MODE_AUTO
+            if value
+            else LINK_RECOGNITION_MODE_OFF
+        )
+
+    normalized = str(value or "").strip().lower()
+    legacy_strings = {
+        "true": LINK_RECOGNITION_MODE_AUTO,
+        "false": LINK_RECOGNITION_MODE_OFF,
+    }
+    normalized = legacy_strings.get(normalized, normalized)
+    if normalized in LINK_RECOGNITION_MODES:
+        return normalized
+
+    logger.warning(
+        f"未知推文链接解析模式: {value!r}，已回退为 auto"
+    )
+    return LINK_RECOGNITION_MODE_AUTO
 
 
 class TwitterPlugin(Star):
@@ -104,11 +141,11 @@ class TwitterPlugin(Star):
                 True,
             )
         )
-        self.link_recognition_enabled = bool(
+        self.link_recognition_mode = _normalize_link_recognition_mode(
             self._cfg(
                 "content_filter",
                 "twitter_link_recognition_enabled",
-                True,
+                LINK_RECOGNITION_MODE_AUTO,
             )
         )
         self.poll_interval = max(
@@ -875,23 +912,19 @@ class TwitterPlugin(Star):
             prepared.videos,
         )
 
-    @filter.event_message_type(filter.EventMessageType.ALL)
-    async def on_message(self, event: AstrMessageEvent):
-        """检测 Twitter/X 链接并解析推文。"""
-        if not self.link_recognition_enabled:
-            return
-
+    async def _handle_tweet_link(
+        self,
+        event: AstrMessageEvent,
+        match,
+        *,
+        report_errors: bool,
+    ):
+        """获取并发送链接对应的推文，供指令和自动识别共用。"""
         umo = event.unified_msg_origin
-        match = TWITTER_LINK_PATTERN.search(event.message_str)
-        if not match:
-            return
-
         link = match.group(1)
         username = match.group(2)
         tweet_id = match.group(3)
         logger.info(f"检测到推文链接: {link}")
-        if not self._provider_ready:
-            return
 
         try:
             tweet_info = await self.twitter_api.get_tweet(username, tweet_id)
@@ -912,6 +945,8 @@ class TwitterPlugin(Star):
                 translate_model=translate_model,
             )
             if not chain:
+                if report_errors:
+                    yield event.plain_result("未找到可发送的推文内容")
                 return
 
             author_username = str(tweet_info.get("username") or username)
@@ -928,9 +963,62 @@ class TwitterPlugin(Star):
             )
             if prepared.primary_chain:
                 yield event.chain_result(prepared.primary_chain)
+            elif report_errors and not prepared.videos:
+                yield event.plain_result("未找到可发送的推文内容")
             await self.delivery_service.send_prepared_videos(
                 umo,
                 prepared.videos,
             )
         except Exception as exc:
             logger.error(f"解析推文链接失败: {exc}")
+            if report_errors:
+                yield event.plain_result("解析推文链接失败，请稍后重试")
+
+    @filter.command("推特解析", alias={"twitter_parse"})
+    async def parse_tweet_link(self, event: AstrMessageEvent):
+        """解析指定的 Twitter/X 推文链接。"""
+        event.stop_event()
+        if self.link_recognition_mode == LINK_RECOGNITION_MODE_OFF:
+            yield event.plain_result("推文链接解析已关闭")
+            return
+
+        match = TWITTER_LINK_PATTERN.search(event.message_str or "")
+        if not match:
+            yield event.plain_result(
+                "请提供推文链接，用法: /推特解析 <Twitter/X 推文链接>"
+            )
+            return
+        if not self._provider_ready:
+            yield event.plain_result(self._provider_unavailable_message())
+            return
+
+        async for result in self._handle_tweet_link(
+            event,
+            match,
+            report_errors=True,
+        ):
+            yield result
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_message(self, event: AstrMessageEvent):
+        """检测 Twitter/X 链接并解析推文。"""
+        if self.link_recognition_mode != LINK_RECOGNITION_MODE_AUTO:
+            return
+
+        message = event.message_str or ""
+        if TWITTER_PARSE_COMMAND_PATTERN.match(message):
+            return
+
+        match = TWITTER_LINK_PATTERN.search(message)
+        if not match:
+            return
+
+        if not self._provider_ready:
+            return
+
+        async for result in self._handle_tweet_link(
+            event,
+            match,
+            report_errors=False,
+        ):
+            yield result

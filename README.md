@@ -66,7 +66,8 @@ _✨ 支持 Nitter 与 FxTwitter API 双数据源的 Twitter 推文转发插件�
 - **媒体资源独立发送** — 可关闭正文或截图之外的原图和视频发送；截图中的媒体预览仍会保留
 
 ### 🔗 链接识别
-- **自动解析** — 聊天中出现 `twitter.com` / `x.com` 链接时自动解析推文内容，可在配置项选择开启或关闭
+- **三种解析模式** — 可选择自动解析聊天中的 `twitter.com` / `x.com` 链接、完全关闭，或仅通过指令触发
+- **手动解析** — 使用 `/推特解析 <推文链接>` 按需解析指定推文
 
 ### 🌐 推文翻译
 - **自动翻译** — 开启后推文正文自动翻译为目标语言，原文被替换
@@ -105,6 +106,7 @@ AstrBot `v4.24.2+` 可在 Dashboard 中直接打开插件的“Twitter 订阅管
 | `/推特列表` | `/twitter_list` | 查看当前会话的订阅列表 |
 | `/推特推送 <开启\|关闭>` | `/twitter_push` | 开关当前会话的推送 |
 | `/推特测试 <用户名>` | `/twitter_test` | 立即获取并推送指定推主的最新推文 |
+| `/推特解析 <推文链接>` | `/twitter_parse` | 手动解析指定的 Twitter/X 推文链接 |
 
 ---
 
@@ -159,7 +161,7 @@ FxTwitter 时间线使用有限 cursor 分页并在本地按推文 ID 去重、�
 |--------|------|--------|------|
 | `twitter_include_retweets` | bool | `true` | 轮询推送和 `/推特测试` 是否推送转帖；关闭后测试指令会寻找最新非转贴推文 |
 | `twitter_deduplicate_retweets` | bool | `false` | 轮询推送时对转帖去重；同一条原帖被多个订阅推主转发时 |
-| `twitter_link_recognition_enabled` | bool | `true` | 推文链接识别全局开关，关闭后聊天中的 Twitter/X 链接不再自动解析 |
+| `twitter_link_recognition_enabled` | string | `auto` | 推文链接解析模式：`auto` 自动解析 / `off` 完全关闭 / `command` 仅响应 `/推特解析` |
 
 ### 翻译配置
 
@@ -167,7 +169,7 @@ FxTwitter 时间线使用有限 cursor 分页并在本地按推文 ID 去重、�
 |--------|------|--------|------|
 | `twitter_translate_enabled` | bool | `false` | 推文内容翻译开关 |
 | `twitter_translate_target_lang` | string | `简体中文` | 翻译目标语言（如：简体中文、日语、英语） |
-| `twitter_translate_provider_id` | string | （空） | 翻译使用的 LLM Provider ID，留空自动选择 |
+| `twitter_translate_provider_id` | string | （空） | 从 AstrBot 已配置的 LLM Provider 中下拉选择，留空自动选择 |
 
 > [!TIP]
 > **LLM Provider 自动选择逻辑**：

@@ -135,10 +135,12 @@
         "hint": "开启后，同一条原帖被多个订阅推主转发时，每个会话只推送第一次"
       },
       "twitter_link_recognition_enabled": {
-        "description": "推文链接识别全局开关",
-        "type": "bool",
-        "default": true,
-        "hint": "关闭后，聊天中出现 twitter.com / x.com 链接时不再自动解析推文内容"
+        "description": "推文链接解析模式",
+        "type": "string",
+        "default": "auto",
+        "options": ["auto", "off", "command"],
+        "labels": ["开启（自动解析）", "关闭", "开启但仅指令触发"],
+        "hint": "自动解析会识别聊天中的 twitter.com / x.com 链接；仅指令触发时需使用 /推特解析 <推文链接>；关闭后两种方式均不解析"
       }
     }
   },
@@ -160,10 +162,11 @@
         "hint": "推文内容将被翻译为此语言，如：简体中文、日语、英语"
       },
       "twitter_translate_provider_id": {
-        "description": "翻译使用的 LLM Provider ID（留空则自动选择）",
+        "description": "翻译使用的 LLM Provider（留空则自动选择）",
         "type": "string",
         "default": "",
-        "hint": "指定翻译用的 Provider ID，留空时按以下顺序自动选择：当前会话 Provider → 第一个可用 Provider"
+        "hint": "选择翻译使用的 Provider，留空时按以下顺序自动选择：当前会话 Provider → 第一个可用 Provider",
+        "_special": "select_provider"
       },
       "twitter_translate_custom_prompt_enabled": {
         "description": "启用自定义翻译提示词",

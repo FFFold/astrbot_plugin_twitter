@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -228,6 +229,7 @@ def test_flat_and_grouped_provider_config_are_compatible(plugin_module):
             "twitter_data_provider": "fxtwitter",
             "twitter_fxtwitter_api_base": "https://fx.example/",
             "twitter_poll_max_tweets_per_user": 7,
+            "twitter_link_recognition_enabled": False,
         },
     )
     grouped = plugin_module.TwitterPlugin(
@@ -237,19 +239,62 @@ def test_flat_and_grouped_provider_config_are_compatible(plugin_module):
                 "twitter_data_provider": "fxtwitter",
                 "twitter_fxtwitter_api_base": "https://grouped.example/",
                 "twitter_poll_max_tweets_per_user": 9,
-            }
+            },
+            "content_filter": {
+                "twitter_link_recognition_enabled": "command",
+            },
         },
     )
 
     assert flat.data_provider == "fxtwitter"
     assert flat.fxtwitter_api_base == "https://fx.example"
     assert flat.poll_max_tweets_per_user == 7
+    assert flat.link_recognition_mode == "off"
     assert grouped.data_provider == "fxtwitter"
     assert grouped.fxtwitter_api_base == "https://grouped.example"
     assert grouped.poll_max_tweets_per_user == 9
+    assert grouped.link_recognition_mode == "command"
 
     defaulted = plugin_module.TwitterPlugin(object(), {})
     assert defaulted.poll_max_tweets_per_user == 5
+    assert defaulted.link_recognition_mode == "auto"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, "auto"),
+        (False, "off"),
+        ("true", "auto"),
+        ("false", "off"),
+        ("auto", "auto"),
+        ("off", "off"),
+        ("command", "command"),
+        ("unexpected", "auto"),
+    ],
+)
+def test_link_recognition_mode_normalization(plugin_module, value, expected):
+    assert plugin_module._normalize_link_recognition_mode(value) == expected
+
+
+def test_schema_exposes_link_modes_and_provider_selector():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    link_mode = schema["content_filter"]["items"][
+        "twitter_link_recognition_enabled"
+    ]
+    provider = schema["translation"]["items"][
+        "twitter_translate_provider_id"
+    ]
+
+    assert link_mode["type"] == "string"
+    assert link_mode["default"] == "auto"
+    assert link_mode["options"] == ["auto", "off", "command"]
+    assert link_mode["labels"] == [
+        "开启（自动解析）",
+        "关闭",
+        "开启但仅指令触发",
+    ]
+    assert provider["_special"] == "select_provider"
 
 
 @pytest.mark.asyncio
@@ -686,7 +731,7 @@ async def test_test_command_and_link_recognition_share_prepared_delivery(
     plugin = plugin_module.TwitterPlugin.__new__(plugin_module.TwitterPlugin)
     plugin._provider_ready = True
     plugin.include_retweets = True
-    plugin.link_recognition_enabled = True
+    plugin.link_recognition_mode = plugin_module.LINK_RECOGNITION_MODE_AUTO
 
     class API:
         async def get_user_timeline_items(self, _username):
@@ -737,6 +782,10 @@ async def test_test_command_and_link_recognition_share_prepared_delivery(
 
         def __init__(self, message_str):
             self.message_str = message_str
+            self.stopped = False
+
+        def stop_event(self):
+            self.stopped = True
 
         @staticmethod
         def plain_result(text):
@@ -763,10 +812,89 @@ async def test_test_command_and_link_recognition_share_prepared_delivery(
             Event("https://x.com/tester/status/123")
         )
     ]
+    command_event = Event(
+        "/推特解析 https://x.com/tester/status/123"
+    )
+    command_results = [
+        result
+        async for result in plugin.parse_tweet_link(command_event)
+    ]
+    duplicate_results = [
+        result
+        async for result in plugin.on_message(
+            Event("/推特解析 https://x.com/tester/status/123")
+        )
+    ]
 
     assert test_results[-1][0].text == "prepared"
     assert link_results[0][0].text == "prepared"
-    assert plugin.delivery_service.prepare_calls == 2
+    assert command_results[0][0].text == "prepared"
+    assert command_event.stopped is True
+    assert duplicate_results == []
+    assert plugin.delivery_service.prepare_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_link_recognition_command_mode_and_off_mode(plugin_module):
+    plugin = plugin_module.TwitterPlugin.__new__(plugin_module.TwitterPlugin)
+    plugin._provider_ready = True
+    handled = []
+
+    async def handle_link(_event, match, *, report_errors):
+        handled.append((match.group(3), report_errors))
+        yield "parsed"
+
+    class Event:
+        unified_msg_origin = "session"
+
+        def __init__(self, message_str):
+            self.message_str = message_str
+            self.stopped = False
+
+        def stop_event(self):
+            self.stopped = True
+
+        @staticmethod
+        def plain_result(text):
+            return text
+
+    plugin._handle_tweet_link = handle_link
+    plugin.link_recognition_mode = plugin_module.LINK_RECOGNITION_MODE_COMMAND
+
+    automatic_results = [
+        result
+        async for result in plugin.on_message(
+            Event("https://x.com/tester/status/123")
+        )
+    ]
+    alias_event = Event(
+        "/twitter_parse https://twitter.com/tester/status/123"
+    )
+    command_results = [
+        result
+        async for result in plugin.parse_tweet_link(alias_event)
+    ]
+    missing_link_results = [
+        result
+        async for result in plugin.parse_tweet_link(Event("/推特解析"))
+    ]
+
+    assert automatic_results == []
+    assert command_results == ["parsed"]
+    assert alias_event.stopped is True
+    assert handled == [("123", True)]
+    assert "用法" in missing_link_results[0]
+
+    plugin.link_recognition_mode = plugin_module.LINK_RECOGNITION_MODE_OFF
+    off_event = Event("/推特解析 https://x.com/tester/status/456")
+    off_results = [
+        result
+        async for result in plugin.parse_tweet_link(off_event)
+    ]
+
+    assert off_results == ["推文链接解析已关闭"]
+    assert off_event.stopped is True
+    assert handled == [("123", True)]
 
 
 @pytest.mark.asyncio

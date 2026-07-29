@@ -178,6 +178,73 @@ def _delivery_settings(plugin_module, **overrides):
 
 
 @pytest.mark.asyncio
+async def test_translate_provider_selection_keeps_fallback_order(plugin_module):
+    class Provider:
+        def __init__(self, provider_id):
+            self.provider_id = provider_id
+
+        def meta(self):
+            return types.SimpleNamespace(id=self.provider_id)
+
+    class Context:
+        def __init__(self, providers, current_provider_id=None):
+            self.providers = providers
+            self.current_provider_id = current_provider_id
+
+        def get_provider_by_id(self, provider_id):
+            return self.providers.get(provider_id)
+
+        async def get_current_chat_provider_id(self, umo):
+            assert umo == "session"
+            return self.current_provider_id
+
+        def get_all_providers(self):
+            return list(self.providers.values())
+
+    providers = {
+        "configured": Provider("configured"),
+        "current": Provider("current"),
+    }
+    configured_service = plugin_module.TweetMessageService(
+        Context(providers, "current"),
+        object(),
+        None,
+        _message_settings(
+            plugin_module,
+            translate_provider_id="configured",
+        ),
+    )
+    current_service = plugin_module.TweetMessageService(
+        Context(providers, "current"),
+        object(),
+        None,
+        _message_settings(
+            plugin_module,
+            translate_provider_id="missing",
+        ),
+    )
+    first_service = plugin_module.TweetMessageService(
+        Context(providers),
+        object(),
+        None,
+        _message_settings(plugin_module),
+    )
+
+    assert (
+        await configured_service.get_translate_provider_id("session")
+        == "configured"
+    )
+    assert (
+        await current_service.get_translate_provider_id("session")
+        == "current"
+    )
+    assert (
+        await first_service.get_translate_provider_id("session")
+        == "configured"
+    )
+
+
+@pytest.mark.asyncio
 async def test_screenshot_uses_prepared_copy_but_sends_original_media(
     plugin_module, tmp_path
 ):
